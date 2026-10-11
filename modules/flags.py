@@ -18,6 +18,14 @@ enhancement_uov_prompt_type_original = 'Original Prompts'
 enhancement_uov_prompt_type_last_filled = 'Last Filled Enhancement Prompts'
 enhancement_uov_prompt_types = [enhancement_uov_prompt_type_original, enhancement_uov_prompt_type_last_filled]
 
+# When the Enhance Upscale/Vary method is an upscale, whether to also run a Vary pass on the upscaled
+# result. Vary keeps the subject but re-draws it, which often looks closer to the source model than
+# the tile-upscale alone.
+upscale_then_vary_off = 'Off'
+upscale_then_vary_subtle = 'Vary (Subtle)'
+upscale_then_vary_strong = 'Vary (Strong)'
+upscale_then_vary_options = [upscale_then_vary_off, upscale_then_vary_subtle, upscale_then_vary_strong]
+
 CIVITAI_NO_KARRAS = ["euler", "euler_ancestral", "heun", "dpm_fast", "dpm_adaptive", "ddim", "uni_pc"]
 
 # fooocus: a1111 (Civitai)

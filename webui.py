@@ -406,10 +406,17 @@ with shared.gradio_root:
                                                                         choices=flags.enhancement_uov_processing_order,
                                                                         value=modules.config.default_enhance_uov_processing_order)
                                 enhance_uov_prompt_type = gr.Radio(label='Prompt',
-                                                                   info='Choose which prompt to use for Upscale or Variation.',
-                                                                   choices=flags.enhancement_uov_prompt_types,
-                                                                   value=modules.config.default_enhance_uov_prompt_type,
-                                                                   visible=modules.config.default_enhance_uov_processing_order == flags.enhancement_uov_after)
+                                                                        info='Choose which prompt to use for Upscale or Variation.',
+                                                                        choices=flags.enhancement_uov_prompt_types,
+                                                                        value=modules.config.default_enhance_uov_prompt_type,
+                                                                        visible=modules.config.default_enhance_uov_processing_order == flags.enhancement_uov_after)
+
+                                upscale_then_vary = gr.Radio(label='Vary after Upscale',
+                                                                        info='After the tile upscale, run a Vary pass so the subject is '
+                                                                             're-drawn closer to the source model. Only used when the '
+                                                                             'method above is an Upscale.',
+                                                                        choices=flags.upscale_then_vary_options,
+                                                                        value=modules.config.default_upscale_then_vary)
 
                                 enhance_uov_processing_order.change(lambda x: gr.update(visible=x == flags.enhancement_uov_after),
                                                                     inputs=enhance_uov_processing_order,
@@ -1041,7 +1048,7 @@ with shared.gradio_root:
         ctrls += ip_ctrls
         ctrls += [debugging_dino, dino_erode_or_dilate, debugging_enhance_masks_checkbox,
                   enhance_input_image, enhance_checkbox, enhance_uov_method, enhance_uov_processing_order,
-                  enhance_uov_prompt_type]
+                  enhance_uov_prompt_type, upscale_then_vary]
         ctrls += enhance_ctrls
 
         def parse_meta(raw_prompt_txt, is_generating):

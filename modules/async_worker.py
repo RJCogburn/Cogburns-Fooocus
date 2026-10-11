@@ -119,6 +119,7 @@ class AsyncTask:
         self.enhance_uov_method = args.pop()
         self.enhance_uov_processing_order = args.pop()
         self.enhance_uov_prompt_type = args.pop()
+        self.upscale_then_vary = args.pop()
         self.enhance_ctrls = []
         for _ in range(modules.config.default_enhance_tabs):
             enhance_enabled = args.pop()
@@ -731,6 +732,49 @@ def worker():
             img = default_censor(img)
         return img
 
+    def vary_image(async_task, img, prompt, negative_prompt, final_scheduler_name, current_progress, callback,
+                   seed, switch, total_count, current_task_id, preparation_steps, all_steps):
+        """Run a Vary pass on an already-upscaled image, at its native resolution.
+
+        Vary keeps the subject but re-draws it, which often lands closer to the source model than the
+        tile upscale alone. The image is not resized first, so the large size is preserved.
+        """
+        if async_task.upscale_then_vary == flags.upscale_then_vary_off:
+            return img, current_progress
+        H, W, C = img.shape
+        if 'subtle' in async_task.upscale_then_vary:
+            denoising_strength = 0.5
+        elif 'strong' in async_task.upscale_then_vary:
+            denoising_strength = 0.85
+        else:
+            return img, current_progress
+        if async_task.overwrite_vary_strength > 0:
+            denoising_strength = async_task.overwrite_vary_strength
+        steps = async_task.performance_selection.steps_uov() or async_task.steps
+        steps, switch, _, _ = apply_overrides(async_task, steps, H, W)
+        progressbar(async_task, current_progress,
+                    f'Varying upscaled image {current_task_id + 1}/{total_count} ...')
+        initial_pixels = core.numpy_to_pytorch(img)
+        candidate_vae, _ = pipeline.get_candidate_vae(steps=steps, switch=switch, denoise=denoising_strength,
+                                                      refiner_swap_method=async_task.refiner_swap_method)
+        initial_latent = core.encode_vae(vae=candidate_vae, pixels=initial_pixels)
+        positive_cond = pipeline.clip_encode([prompt])
+        if abs(float(async_task.cfg_scale) - 1.0) < 1e-4:
+            negative_cond = pipeline.clone_cond(positive_cond)
+        else:
+            negative_cond = pipeline.clip_encode([negative_prompt])
+        imgs = pipeline.process_diffusion(
+            positive_cond=positive_cond, negative_cond=negative_cond, steps=steps, switch=switch,
+            width=W, height=H, image_seed=seed, callback=callback, sampler_name=async_task.sampler_name,
+            scheduler_name=final_scheduler_name, latent=initial_latent, denoise=denoising_strength,
+            tiled=False, cfg_scale=async_task.cfg_scale,
+            refiner_swap_method=async_task.refiner_swap_method, disable_preview=async_task.disable_preview)
+        current_progress = int(preparation_steps + (100 - preparation_steps) / float(all_steps) * steps)
+        if modules.config.default_black_out_nsfw or async_task.black_out_nsfw:
+            progressbar(async_task, current_progress, 'Checking for NSFW content ...')
+            imgs = default_censor(imgs)
+        return imgs[0], current_progress
+
     def apply_overrides(async_task, steps, height, width):
         if async_task.overwrite_step > 0:
             steps = async_task.overwrite_step
@@ -1116,7 +1160,7 @@ def worker():
             async_task, prompt, negative_prompt, base_model_additional_loras, 1, True,
             use_expansion, use_style, use_synthetic_refiner, current_progress)
         task_enhance = tasks_enhance[0]
-        # TODO could support vary, upscale and CN in the future
+        # TODO could support CN in the future
         # if 'cn' in goals:
         #     apply_control_nets(async_task, height, ip_adapter_face_path, ip_adapter_path, width)
         if async_task.freeu_enabled:
@@ -1147,6 +1191,13 @@ def worker():
             target_width, target_height = enhance_upscale_target
             imgs = [upscale_with_detail(async_task, x, target_width, target_height, switch, final_scheduler_name,
                                         task_enhance['task_seed'], current_progress) for x in imgs]
+            # Vary after Upscale: re-draw the upscaled subject so it lands closer to the source model.
+            if async_task.upscale_then_vary != flags.upscale_then_vary_off:
+                for i, x in enumerate(imgs):
+                    imgs[i], current_progress = vary_image(async_task, x, prompt, negative_prompt,
+                                                           final_scheduler_name, current_progress, callback,
+                                                           task_enhance['task_seed'], switch, total_count,
+                                                           current_task_id, preparation_steps, all_steps)
             progressbar(async_task, current_progress,
                         f'Saving image {current_task_id + 1}/{total_count} to system ...')
             img_paths = save_and_log(async_task, target_height, imgs, task_enhance, use_expansion, target_width,
@@ -1387,6 +1438,12 @@ def worker():
             enhance_upscale_steps, _, _, _ = apply_overrides(async_task, enhance_upscale_steps, height, width)
             enhance_upscale_steps_total = async_task.image_number * enhance_upscale_steps
             all_steps += enhance_upscale_steps_total
+            # Vary after Upscale runs an extra diffusion pass per image, so reserve steps for it too.
+            if async_task.upscale_then_vary != flags.upscale_then_vary_off and 'upscale' in async_task.enhance_uov_method:
+                vary_steps, _, _, _ = apply_overrides(async_task,
+                                                      async_task.performance_selection.steps_uov() or async_task.steps,
+                                                      height, width)
+                all_steps += async_task.image_number * vary_steps
 
         if async_task.enhance_checkbox and len(async_task.enhance_ctrls) != 0:
             enhance_steps, _, _, _ = apply_overrides(async_task, async_task.original_steps, height, width)

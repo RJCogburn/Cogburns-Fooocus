@@ -632,6 +632,12 @@ default_enhance_uov_prompt_type = get_config_item_or_set_default(
     validator=lambda x: x in modules.flags.enhancement_uov_prompt_types,
     expected_type=int
 )
+default_upscale_then_vary = get_config_item_or_set_default(
+    key='default_upscale_then_vary',
+    default_value=modules.flags.upscale_then_vary_off,
+    validator=lambda x: x in modules.flags.upscale_then_vary_options,
+    expected_type=str
+)
 default_sam_max_detections = get_config_item_or_set_default(
     key='default_sam_max_detections',
     default_value=0,
