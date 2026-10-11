@@ -470,9 +470,6 @@ def worker():
         if advance_progress:
             current_progress += 1
         progressbar(async_task, current_progress, 'VAE encoding ...')
-        # a neutral prompt: with the image prompt, plain background tiles grow small copies of the subject
-        positive_cond = pipeline.clip_encode(['highly detailed, sharp focus, high quality, fine texture'])
-        negative_cond = pipeline.clip_encode(['blurry, lowres, artifacts'])
         candidate_vae, _ = pipeline.get_candidate_vae(
             steps=async_task.steps,
             switch=switch,
@@ -621,9 +618,6 @@ def worker():
         if advance_progress:
             current_progress += 1
         progressbar(async_task, current_progress, 'VAE encoding ...')
-        # a neutral prompt: with the image prompt, plain background tiles grow small copies of the subject
-        positive_cond = pipeline.clip_encode(['highly detailed, sharp focus, high quality, fine texture'])
-        negative_cond = pipeline.clip_encode(['blurry, lowres, artifacts'])
         candidate_vae, _ = pipeline.get_candidate_vae(
             steps=async_task.steps,
             switch=switch,
@@ -643,7 +637,7 @@ def worker():
 
     def upscale_with_detail(async_task, img, target_width, target_height, switch, scheduler_name, seed,
                             current_progress, tile=1024, overlap=128, denoise=0.4, controlnet_strength=0.7,
-                            flat_threshold=2.5):
+                            flat_threshold=2.5, max_tiles=64):
         """Enlarge with the upscaler, then redraw overlapping tiles to add real detail.
 
         Three things keep the result true to the original: a tile ControlNet guides every tile by its own
@@ -667,21 +661,28 @@ def worker():
         img = resample_image(img, target_width, target_height)
         scale = target_width / base_width
 
-        def starts(size):
+        def starts(size, tile, overlap):
             n = max(1, math.ceil((size - overlap) / (tile - overlap)))
             if n == 1:
                 return [0]
             return [int(round(i * (size - tile) / (n - 1) / 8.0)) * 8 for i in range(n)]
 
+        # Bound the total diffusion passes. 8K would otherwise make a 9x5 grid; grow the overlap to fit
+        # the cap first (keeps tile quality), and only shrink the tile size as a last resort.
+        while True:
+            ys, xs = starts(target_height, tile, overlap), starts(target_width, tile, overlap)
+            if len(ys) * len(xs) <= max_tiles or overlap >= tile - 8:
+                break
+            overlap = min(tile - 8, overlap + 64)
+
+        ramp = np.minimum(np.arange(tile) + 1, np.arange(tile)[::-1] + 1)
+        ramp = np.minimum(ramp / overlap, 1.0).astype(np.float32)
+        weight = np.outer(ramp, ramp)[..., None]
+
         def detail_level(pixels):
             # mean edge strength at the original resolution, where the real content lives
             small = cv2.resize(pixels, None, fx=1 / scale, fy=1 / scale, interpolation=cv2.INTER_AREA)
             return float(np.abs(cv2.Laplacian(cv2.cvtColor(small, cv2.COLOR_RGB2GRAY), cv2.CV_32F)).mean())
-
-        ys, xs = starts(target_height), starts(target_width)
-        ramp = np.minimum(np.arange(tile) + 1, np.arange(tile)[::-1] + 1)
-        ramp = np.minimum(ramp / overlap, 1.0).astype(np.float32)
-        weight = np.outer(ramp, ramp)[..., None]
 
         if async_task.overwrite_upscale_strength > 0:
             denoise = async_task.overwrite_upscale_strength
@@ -1637,9 +1638,12 @@ def worker():
                 blocked = str(e)
                 task.processing = False
                 task.yields.append(['blocked', str(e)])
-            except:
+            except Exception:
+                # Never swallow a failure silently: the task result carries nothing, so the UI would show a
+                # blank finish. Print the traceback and surface it as a failed task instead.
                 traceback.print_exc()
-                task.yields.append(['finish', task.results])
+                task.processing = False
+                task.yields.append(['error', traceback.format_exc()])
             finally:
                 safety_filter.log_activity(task, blocked)
                 if pid in modules.patch.patch_settings:

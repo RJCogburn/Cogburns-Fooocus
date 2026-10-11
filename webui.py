@@ -78,6 +78,14 @@ def generate_clicked(task: worker.AsyncTask):
                     gr.update(visible=False), \
                     gr.update(visible=False)
                 finished = True
+            if flag == 'error':
+                # An unexpected failure in the worker. Surface the traceback instead of a blank finish.
+                print(f'[Fooocus] {product}')
+                yield gr.update(visible=True, value=modules.html.make_progress_html(100, product)), \
+                    gr.update(visible=False), \
+                    gr.update(visible=False), \
+                    gr.update(visible=False)
+                finished = True
             if flag == 'finish':
                 if not args_manager.args.disable_enhance_output_sorting:
                     product = sort_enhance_images(product, task)

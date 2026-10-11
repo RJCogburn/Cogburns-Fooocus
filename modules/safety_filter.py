@@ -6,6 +6,7 @@ images are run through the NSFW check (black out NSFW) regardless of the UI sett
 import json
 import os
 import re
+import threading
 import time
 
 # Written by DiffusionDeck's Family Safety mode. While it exists, Black Out NSFW is forced on.
@@ -23,21 +24,54 @@ FAMILY_ACTIVITY = os.path.join(os.path.dirname(FAMILY_LOCK), 'family_activity.js
 FAMILY_WORDS = os.path.join(os.path.dirname(FAMILY_LOCK), 'family_words.json')
 WORDS_MESSAGE = 'Blocked: this prompt uses a word that isn\'t allowed. Nothing was generated.'
 
+# Cached policy files. The parent can change these at any time, so we re-read when the file's mtime
+# changes rather than caching forever (and rather than reading on every check, which is slow).
+_WORDS_CACHE: tuple[float, list] | None = None
+_MODELS_CACHE: tuple[float, set] | None = None
 
-def _custom_words() -> list:
+
+def _cached_words() -> list:
+    global _WORDS_CACHE
+    try:
+        mtime = os.stat(FAMILY_WORDS).st_mtime
+    except OSError:
+        _WORDS_CACHE = None
+        return []
+    if _WORDS_CACHE is not None and _WORDS_CACHE[0] == mtime:
+        return _WORDS_CACHE[1]
     try:
         with open(FAMILY_WORDS, encoding='utf-8') as f:
             words = json.load(f).get('blocked', [])
     except (OSError, ValueError, AttributeError):
-        return []
-    return [w for w in (_normalize(str(w)) for w in words) if w]
+        words = []
+    words = [w for w in (_normalize(str(w)) for w in words) if w]
+    _WORDS_CACHE = (mtime, words)
+    return words
+
+
+def _cached_blocked_models() -> set:
+    global _MODELS_CACHE
+    try:
+        mtime = os.stat(FAMILY_MODELS).st_mtime
+    except OSError:
+        _MODELS_CACHE = None
+        return set()
+    if _MODELS_CACHE is not None and _MODELS_CACHE[0] == mtime:
+        return _MODELS_CACHE[1]
+    try:
+        with open(FAMILY_MODELS, encoding='utf-8') as f:
+            blocked = {os.path.basename(n).casefold() for n in json.load(f).get('blocked', [])}
+    except (OSError, ValueError, AttributeError):
+        blocked = set()
+    _MODELS_CACHE = (mtime, blocked)
+    return blocked
 
 
 def uses_blocked_word(*texts: str) -> bool:
     """True when a parent-blocked word or phrase appears as whole words (also in number-letter spelling)."""
     if not family_lock():
         return False
-    words = _custom_words()
+    words = _cached_words()
     if not words:
         return False
     text = ' '.join(_normalize(t or '') for t in texts)
@@ -45,18 +79,10 @@ def uses_blocked_word(*texts: str) -> bool:
     return bool(pattern.search(text) or pattern.search(text.translate(_LEET)))
 
 
-def _blocked_models() -> set:
-    try:
-        with open(FAMILY_MODELS, encoding='utf-8') as f:
-            return {os.path.basename(n).casefold() for n in json.load(f).get('blocked', [])}
-    except (OSError, ValueError, AttributeError):
-        return set()
-
-
 def model_allowed(name) -> bool:
     if not family_lock() or not isinstance(name, str) or name == 'None':
         return True
-    return os.path.basename(name).casefold() not in _blocked_models()
+    return os.path.basename(name).casefold() not in _cached_blocked_models()
 
 
 def allowed_models(names: list) -> list:
@@ -69,15 +95,22 @@ def check_model(name) -> None:
                             'Nothing was generated.')
 
 
-# Pictures the NSFW check blacked out during the current request (one worker thread, reset per request).
-blacked_out = 0
+# Pictures the NSFW check blacked out during the current request. Per worker thread, reset per request.
+_local = threading.local()
+
+
+def _blacked_out() -> int:
+    return getattr(_local, 'blacked_out', 0)
+
+
+def _set_blacked_out(value: int) -> None:
+    _local.blacked_out = value
 
 
 def count_censored(before, after) -> None:
     """Called with the pictures before and after the NSFW check; counts the ones it turned black."""
-    global blacked_out
     pairs = zip(before, after) if isinstance(before, list) else [(before, after)]
-    blacked_out += sum(1 for b, a in pairs if a.max() == 0 and b.max() > 0)
+    _set_blacked_out(_blacked_out() + sum(1 for b, a in pairs if a.max() == 0 and b.max() > 0))
 
 
 def _block_kind(blocked: str) -> str:
@@ -92,8 +125,8 @@ def _block_kind(blocked: str) -> str:
 
 def log_activity(async_task, blocked: str = '') -> None:
     """Record what was asked for, so a parent can review it in DiffusionDeck."""
-    global blacked_out
-    count, blacked_out = blacked_out, 0
+    count = _blacked_out()
+    _set_blacked_out(0)
     if not family_lock():
         return
     entry = {

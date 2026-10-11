@@ -768,16 +768,25 @@ if REWRITE_PRESET and isinstance(args_manager.args.preset, str):
 
 
 def add_ratio(x):
-    a, b = x.replace('*', ' ').split(' ')[:2]
-    a, b = int(a), int(b)
-    g = math.gcd(a, b)
-    name = modules.flags.large_aspect_ratios.get(f'{a}*{b}')
-    name = f' {name}' if name else ''
-    return f'{a}×{b} <span style="color: grey;"> \U00002223 {a // g}:{b // g}{name}</span>'
+        a, b = x.replace('*', ' ').split(' ')[:2]
+        a, b = int(a), int(b)
+        g = math.gcd(a, b)
+        name = modules.flags.large_aspect_ratios.get(f'{a}*{b}')
+        name = f' {name}' if name else ''
+        return f'{a}×{b} <span style="color: grey;"> \U00002223 {a // g}:{b // g}{name}</span>'
+
+
+def _safe_add_ratio(x):
+        """Like add_ratio but never raises: a malformed ratio string is dropped rather than crashing config."""
+        try:
+            return add_ratio(x)
+        except (ValueError, TypeError):
+            print(f'[Config] Skipping malformed aspect ratio {x!r}')
+            return None
 
 
 default_aspect_ratio = add_ratio(default_aspect_ratio)
-available_aspect_ratios_labels = [add_ratio(x) for x in available_aspect_ratios]
+available_aspect_ratios_labels = [label for label in (_safe_add_ratio(x) for x in available_aspect_ratios) if label]
 
 
 # Only write config in the first launch.

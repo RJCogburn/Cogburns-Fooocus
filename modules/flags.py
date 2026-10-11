@@ -106,19 +106,26 @@ sdxl_aspect_ratios = [
     '1664*576', '1728*576'
 ]
 
-# 2K is generated at that size. 1080p, 4K and 8K are generated at the SDXL size in upscale_aspect_ratios,
-# then enlarged and redrawn tile by tile at low strength so the subject stays the same.
+# Large output sizes, shown in the aspect-ratio picker. Every one is generated at the SDXL base size
+# and then enlarged and redrawn tile by tile at low strength (upscale_with_detail), so the subject stays
+# the same and the picture is cleaned up the same way regardless of which large size you pick.
 large_aspect_ratios = {
     '1920*1080': '1080p', '1080*1920': '1080p',
     '2560*1440': '2K', '1440*2560': '2K',
     '3840*2160': '4K', '2160*3840': '4K',
     '7680*4320': '8K', '4320*7680': '8K',
 }
+# SDXL base size each large ratio is generated at before upscale_with_detail cleans it up.
+# Landscape ratios use 1344*768, portrait ratios use 768*1344 (SDXL's native 16:9/9:16).
+# Must cover exactly the same sizes as large_aspect_ratios - the assert below catches drift.
 upscale_aspect_ratios = {
     '1920*1080': '1344*768', '1080*1920': '768*1344',
+    '2560*1440': '1344*768', '1440*2560': '768*1344',
     '3840*2160': '1344*768', '2160*3840': '768*1344',
     '7680*4320': '1344*768', '4320*7680': '768*1344',
 }
+assert set(large_aspect_ratios) == set(upscale_aspect_ratios), \
+    'large_aspect_ratios and upscale_aspect_ratios must cover the same sizes'
 
 
 class MetadataScheme(Enum):
