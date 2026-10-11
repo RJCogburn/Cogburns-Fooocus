@@ -477,7 +477,7 @@ vae_downloads = get_config_item_or_set_default(
 )
 available_aspect_ratios = get_config_item_or_set_default(
     key='available_aspect_ratios',
-    default_value=modules.flags.sdxl_aspect_ratios,
+    default_value=modules.flags.sdxl_aspect_ratios + list(modules.flags.large_aspect_ratios),
     validator=lambda x: isinstance(x, list) and all('*' in v for v in x) and len(x) > 1,
     expected_type=list
 )
@@ -768,7 +768,9 @@ def add_ratio(x):
     a, b = x.replace('*', ' ').split(' ')[:2]
     a, b = int(a), int(b)
     g = math.gcd(a, b)
-    return f'{a}×{b} <span style="color: grey;"> \U00002223 {a // g}:{b // g}</span>'
+    name = modules.flags.large_aspect_ratios.get(f'{a}*{b}')
+    name = f' {name}' if name else ''
+    return f'{a}×{b} <span style="color: grey;"> \U00002223 {a // g}:{b // g}{name}</span>'
 
 
 default_aspect_ratio = add_ratio(default_aspect_ratio)
@@ -883,6 +885,15 @@ def downloading_sdxl_hyper_sd_lora():
         file_name=modules.flags.PerformanceLoRA.HYPER_SD.value
     )
     return modules.flags.PerformanceLoRA.HYPER_SD.value
+
+
+def downloading_controlnet_tile():
+    load_file_from_url(
+        url='https://huggingface.co/xinsir/controlnet-tile-sdxl-1.0/resolve/main/diffusion_pytorch_model.safetensors',
+        model_dir=path_controlnet,
+        file_name='xinsir_controlnet_tile_sdxl.safetensors'
+    )
+    return os.path.join(path_controlnet, 'xinsir_controlnet_tile_sdxl.safetensors')
 
 
 def downloading_controlnet_canny():

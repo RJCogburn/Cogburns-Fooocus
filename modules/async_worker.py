@@ -464,6 +464,9 @@ def worker():
         if advance_progress:
             current_progress += 1
         progressbar(async_task, current_progress, 'VAE encoding ...')
+        # a neutral prompt: with the image prompt, plain background tiles grow small copies of the subject
+        positive_cond = pipeline.clip_encode(['highly detailed, sharp focus, high quality, fine texture'])
+        negative_cond = pipeline.clip_encode(['blurry, lowres, artifacts'])
         candidate_vae, _ = pipeline.get_candidate_vae(
             steps=async_task.steps,
             switch=switch,
@@ -612,6 +615,9 @@ def worker():
         if advance_progress:
             current_progress += 1
         progressbar(async_task, current_progress, 'VAE encoding ...')
+        # a neutral prompt: with the image prompt, plain background tiles grow small copies of the subject
+        positive_cond = pipeline.clip_encode(['highly detailed, sharp focus, high quality, fine texture'])
+        negative_cond = pipeline.clip_encode(['blurry, lowres, artifacts'])
         candidate_vae, _ = pipeline.get_candidate_vae(
             steps=async_task.steps,
             switch=switch,
@@ -626,6 +632,97 @@ def worker():
         height = H * 8
         print(f'Final resolution is {str((width, height))}.')
         return direct_return, uov_input_image, denoising_strength, initial_latent, tiled, width, height, current_progress
+
+    tile_controlnet = {}
+
+    def upscale_with_detail(async_task, img, target_width, target_height, switch, scheduler_name, seed,
+                            current_progress, tile=1024, overlap=128, denoise=0.4, controlnet_strength=0.7,
+                            flat_threshold=2.5):
+        """Enlarge with the upscaler, then redraw overlapping tiles to add real detail.
+
+        Three things keep the result true to the original: a tile ControlNet guides every tile by its own
+        pixels, plain tiles (sky, fog, walls) are left as they are, and at the end only the fine detail of
+        the redraw is kept on top of the original's colours and shapes."""
+        base_width = img.shape[1]
+        progressbar(async_task, current_progress, f'Upscaling to {target_width}×{target_height} ...')
+        if max(img.shape[:2]) < max(target_width, target_height):
+            img = perform_upscale(img)
+        while max(img.shape[:2]) < max(target_width, target_height) / 2:
+            img = perform_upscale(img)
+
+        # crop to the target aspect ratio (the SDXL base size is close but not exact), then resize
+        H, W = img.shape[:2]
+        if W * target_height > H * target_width:
+            w = round(H * target_width / target_height)
+            img = img[:, (W - w) // 2:(W - w) // 2 + w]
+        else:
+            h = round(W * target_height / target_width)
+            img = img[(H - h) // 2:(H - h) // 2 + h]
+        img = resample_image(img, target_width, target_height)
+        scale = target_width / base_width
+
+        def starts(size):
+            n = max(1, math.ceil((size - overlap) / (tile - overlap)))
+            if n == 1:
+                return [0]
+            return [int(round(i * (size - tile) / (n - 1) / 8.0)) * 8 for i in range(n)]
+
+        def detail_level(pixels):
+            # mean edge strength at the original resolution, where the real content lives
+            small = cv2.resize(pixels, None, fx=1 / scale, fy=1 / scale, interpolation=cv2.INTER_AREA)
+            return float(np.abs(cv2.Laplacian(cv2.cvtColor(small, cv2.COLOR_RGB2GRAY), cv2.CV_32F)).mean())
+
+        ys, xs = starts(target_height), starts(target_width)
+        ramp = np.minimum(np.arange(tile) + 1, np.arange(tile)[::-1] + 1)
+        ramp = np.minimum(ramp / overlap, 1.0).astype(np.float32)
+        weight = np.outer(ramp, ramp)[..., None]
+
+        if async_task.overwrite_upscale_strength > 0:
+            denoise = async_task.overwrite_upscale_strength
+        steps = async_task.performance_selection.steps_uov() or async_task.steps
+        steps, switch, _, _ = apply_overrides(async_task, steps, tile, tile)
+        if 'model' not in tile_controlnet:
+            progressbar(async_task, current_progress, 'Downloading tile ControlNet (2.5 GB, first time only) ...')
+            tile_controlnet['model'] = core.load_controlnet(modules.config.downloading_controlnet_tile())
+        # a neutral prompt: with the image prompt, plain background tiles grow small copies of the subject
+        positive_cond = pipeline.clip_encode(['highly detailed, sharp focus, high quality, fine texture'])
+        negative_cond = pipeline.clip_encode(['blurry, lowres, artifacts'])
+        candidate_vae, _ = pipeline.get_candidate_vae(steps=steps, switch=switch, denoise=denoise,
+                                                      refiner_swap_method=async_task.refiner_swap_method)
+        result = np.zeros(img.shape, dtype=np.float32)
+        total = np.zeros(img.shape[:2] + (1,), dtype=np.float32)
+        count = len(ys) * len(xs)
+        skipped = 0
+        for i, (y, x) in enumerate((y, x) for y in ys for x in xs):
+            source = img[y:y + tile, x:x + tile]
+            if detail_level(source) < flat_threshold:
+                out = source
+                skipped += 1
+            else:
+                progressbar(async_task, current_progress, f'Adding detail at {target_width}×{target_height}, tile {i + 1}/{count} ...')
+                pixels = core.numpy_to_pytorch(source)
+                positive, negative = core.apply_controlnet(positive_cond, negative_cond, tile_controlnet['model'],
+                                                           pixels, controlnet_strength, 0.0, 1.0)
+                out = pipeline.process_diffusion(
+                    positive_cond=positive, negative_cond=negative, steps=steps, switch=switch,
+                    width=tile, height=tile, image_seed=seed, callback=None, sampler_name=async_task.sampler_name,
+                    scheduler_name=scheduler_name, latent=core.encode_vae(vae=candidate_vae, pixels=pixels),
+                    denoise=denoise, tiled=False, cfg_scale=async_task.cfg_scale,
+                    refiner_swap_method=async_task.refiner_swap_method, disable_preview=True)[0]
+            result[y:y + tile, x:x + tile] += out.astype(np.float32) * weight
+            total[y:y + tile, x:x + tile] += weight
+        result /= total
+
+        # keep the original's colours and shapes, take only the fine detail from the redraw
+        sigma = max(1.0, scale / 2)
+        original = img.astype(np.float32)
+        result = cv2.GaussianBlur(original, (0, 0), sigma) + result - cv2.GaussianBlur(result, (0, 0), sigma)
+        img = np.clip(result, 0, 255).round().astype(np.uint8)
+        print(f'[Upscale] Final resolution is {target_width}×{target_height} '
+              f'({count - skipped} of {count} tiles redrawn at strength {denoise}).')
+        if modules.config.default_black_out_nsfw or async_task.black_out_nsfw:
+            img = default_censor(img)
+        return img
 
     def apply_overrides(async_task, steps, height, width):
         if async_task.overwrite_step > 0:
@@ -1130,6 +1227,11 @@ def worker():
         width, height = async_task.aspect_ratios_selection.replace('×', ' ').split(' ')[:2]
         width, height = int(width), int(height)
 
+        upscale_to = None
+        if f'{width}*{height}' in flags.upscale_aspect_ratios:
+            upscale_to = (width, height)
+            width, height = (int(x) for x in flags.upscale_aspect_ratios[f'{width}*{height}'].split('*'))
+
         skip_prompt_processing = False
 
         inpaint_worker.current_task = None
@@ -1301,8 +1403,18 @@ def worker():
                                                                  initial_latent, async_task.steps, switch, task['c'],
                                                                  task['uc'], task, loras, tiled, use_expansion, width,
                                                                  height, current_progress, preparation_steps,
-                                                                 async_task.image_number, show_intermediate_results,
-                                                                 persist_image)
+                                                                 async_task.image_number,
+                                                                 show_intermediate_results or upscale_to is not None,
+                                                                 persist_image and upscale_to is None)
+
+                if upscale_to is not None:
+                    imgs = [upscale_with_detail(async_task, x, *upscale_to, switch, final_scheduler_name,
+                                                task['task_seed'], current_progress) for x in imgs]
+                    progressbar(async_task, current_progress, f'Saving image {current_task_id + 1}/{async_task.image_number} to system ...')
+                    img_paths = save_and_log(async_task, upscale_to[1], imgs, task, use_expansion, upscale_to[0], loras,
+                                             persist_image)
+                    yield_result(async_task, img_paths, current_progress, async_task.black_out_nsfw, False,
+                                 do_not_show_finished_images=not show_intermediate_results or async_task.disable_intermediate_results)
 
                 current_progress = int(preparation_steps + (100 - preparation_steps) / float(all_steps) * async_task.steps * (current_task_id + 1))
                 images_to_enhance += imgs
@@ -1479,6 +1591,7 @@ def worker():
         if len(async_tasks) > 0:
             task = async_tasks.pop(0)
 
+            blocked = ''
             try:
                 handler(task)
                 if task.generate_image_grid:

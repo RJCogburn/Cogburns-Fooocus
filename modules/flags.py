@@ -106,6 +106,20 @@ sdxl_aspect_ratios = [
     '1664*576', '1728*576'
 ]
 
+# 2K is generated at that size. 1080p, 4K and 8K are generated at the SDXL size in upscale_aspect_ratios,
+# then enlarged and redrawn tile by tile at low strength so the subject stays the same.
+large_aspect_ratios = {
+    '1920*1080': '1080p', '1080*1920': '1080p',
+    '2560*1440': '2K', '1440*2560': '2K',
+    '3840*2160': '4K', '2160*3840': '4K',
+    '7680*4320': '8K', '4320*7680': '8K',
+}
+upscale_aspect_ratios = {
+    '1920*1080': '1344*768', '1080*1920': '768*1344',
+    '3840*2160': '1344*768', '2160*3840': '768*1344',
+    '7680*4320': '1344*768', '4320*7680': '768*1344',
+}
+
 
 class MetadataScheme(Enum):
     FOOOCUS = 'fooocus'
