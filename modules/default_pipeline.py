@@ -4,6 +4,7 @@ import torch
 import modules.patch
 import modules.config
 import modules.flags
+import modules.safety_filter as safety_filter
 import ldm_patched.modules.model_management
 import ldm_patched.modules.latent_formats
 import modules.inpaint_worker
@@ -61,6 +62,7 @@ def assert_model_integrity():
 @torch.inference_mode()
 def refresh_base_model(name, vae_name=None):
     global model_base
+    safety_filter.check_model(name)
 
     filename = get_file_from_folder_list(name, modules.config.paths_checkpoints)
 
@@ -81,6 +83,7 @@ def refresh_base_model(name, vae_name=None):
 @torch.inference_mode()
 def refresh_refiner_model(name):
     global model_refiner
+    safety_filter.check_model(name)
 
     filename = get_file_from_folder_list(name, modules.config.paths_checkpoints)
 
@@ -132,6 +135,8 @@ def synthesize_refiner_model():
 @torch.inference_mode()
 def refresh_loras(loras, base_model_additional_loras=None):
     global model_base, model_refiner
+    for filename, _ in loras:
+        safety_filter.check_model(filename)
 
     if not isinstance(base_model_additional_loras, list):
         base_model_additional_loras = []

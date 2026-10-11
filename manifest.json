@@ -1,0 +1,15 @@
+{
+  "label": "Cogburns Fooocus (mashb1t)",
+  "commit": "21a44c214a574536216e03209ee034f35c6527c9",
+  "version_marker": "(mashb1t)",
+  "files": [
+    "webui.py",
+    "args_manager.py",
+    "modules/async_worker.py",
+    "modules/config.py",
+    "modules/default_pipeline.py",
+    "modules/flags.py",
+    "modules/safety_filter.py"
+  ],
+  "notice": "Modified copies of files from mashb1t/Fooocus (GPL-3.0, https://github.com/mashb1t/Fooocus) at the commit above. This is Cogburns Fooocus. Changes: an always-on block for prompts combining minors with sexual content, a family_safety.lock file that forces Black Out NSFW on, blocks the models in family_models.json, logs prompts to family_activity.jsonl and turns off --share/--listen, 1080p/2K/4K/8K sizes, and a fix so the Enhance-tab Upscale/Vary cleans up the picture the same way as the large aspect ratios (process_enhance now runs upscale_with_detail and re-saves at the upscaled resolution)."
+}

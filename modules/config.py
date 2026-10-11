@@ -4,6 +4,7 @@ import math
 import numbers
 
 import args_manager
+import modules.safety_filter
 import tempfile
 import modules.flags
 import modules.sdxl_styles
@@ -477,7 +478,7 @@ vae_downloads = get_config_item_or_set_default(
 )
 available_aspect_ratios = get_config_item_or_set_default(
     key='available_aspect_ratios',
-    default_value=modules.flags.sdxl_aspect_ratios,
+    default_value=modules.flags.sdxl_aspect_ratios + list(modules.flags.large_aspect_ratios),
     validator=lambda x: isinstance(x, list) and all('*' in v for v in x) and len(x) > 1,
     expected_type=list
 )
@@ -643,6 +644,8 @@ default_black_out_nsfw = get_config_item_or_set_default(
     validator=lambda x: isinstance(x, bool),
     expected_type=bool
 )
+if modules.safety_filter.family_lock():
+    default_black_out_nsfw = True
 default_save_only_final_enhanced_image = get_config_item_or_set_default(
     key='default_save_only_final_enhanced_image',
     default_value=False,
@@ -768,7 +771,9 @@ def add_ratio(x):
     a, b = x.replace('*', ' ').split(' ')[:2]
     a, b = int(a), int(b)
     g = math.gcd(a, b)
-    return f'{a}×{b} <span style="color: grey;"> \U00002223 {a // g}:{b // g}</span>'
+    name = modules.flags.large_aspect_ratios.get(f'{a}*{b}')
+    name = f' {name}' if name else ''
+    return f'{a}×{b} <span style="color: grey;"> \U00002223 {a // g}:{b // g}{name}</span>'
 
 
 default_aspect_ratio = add_ratio(default_aspect_ratio)
@@ -812,8 +817,15 @@ def get_model_filenames(folder_paths, extensions=None, name_filter=None):
 
 def update_files():
     global model_filenames, lora_filenames, vae_filenames, wildcard_filenames, available_presets
-    model_filenames = get_model_filenames(paths_checkpoints)
-    lora_filenames = get_model_filenames(paths_loras)
+    global default_base_model_name, default_refiner_model_name, default_loras
+    model_filenames = modules.safety_filter.allowed_models(get_model_filenames(paths_checkpoints))
+    lora_filenames = modules.safety_filter.allowed_models(get_model_filenames(paths_loras))
+    # defaults that Family Safety blocks are swapped for an allowed model (or none)
+    if not modules.safety_filter.model_allowed(default_base_model_name) and model_filenames:
+        default_base_model_name = model_filenames[0]
+    if not modules.safety_filter.model_allowed(default_refiner_model_name):
+        default_refiner_model_name = 'None'
+    default_loras = [(e, n if modules.safety_filter.model_allowed(n) else 'None', w) for e, n, w in default_loras]
     vae_filenames = get_model_filenames(path_vae)
     wildcard_filenames = get_files_from_folder(path_wildcards, ['.txt'])
     available_presets = get_presets()
@@ -883,6 +895,15 @@ def downloading_sdxl_hyper_sd_lora():
         file_name=modules.flags.PerformanceLoRA.HYPER_SD.value
     )
     return modules.flags.PerformanceLoRA.HYPER_SD.value
+
+
+def downloading_controlnet_tile():
+    load_file_from_url(
+        url='https://huggingface.co/xinsir/controlnet-tile-sdxl-1.0/resolve/main/diffusion_pytorch_model.safetensors',
+        model_dir=path_controlnet,
+        file_name='xinsir_controlnet_tile_sdxl.safetensors'
+    )
+    return os.path.join(path_controlnet, 'xinsir_controlnet_tile_sdxl.safetensors')
 
 
 def downloading_controlnet_canny():

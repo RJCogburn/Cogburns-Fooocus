@@ -48,6 +48,12 @@ args_parser.parser.set_defaults(
 
 args_parser.args = args_parser.parser.parse_args()
 
+# DiffusionDeck Family Safety: no public share link, and only reachable from this computer
+import modules.safety_filter
+if modules.safety_filter.family_lock():
+    args_parser.args.share = False
+    args_parser.args.listen = '127.0.0.1'
+
 # (Disable by default because of issues like https://github.com/lllyasviel/Fooocus/issues/724)
 args_parser.args.always_offload_from_vram = not args_parser.args.disable_offload_from_vram
 
